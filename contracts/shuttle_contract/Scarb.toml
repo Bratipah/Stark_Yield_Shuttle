@@ -1,0 +1,15 @@
+[package]
+name = "shuttle_contract"
+version = "0.1.0"
+
+[cairo]
+version = "2.6.4"
+
+[dependencies]
+starknet = ">=2.6.0"
+
+[[target.starknet-contract]]
+sierra = true
+casm = true
+
+[tool]
