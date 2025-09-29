@@ -7,31 +7,36 @@ export default function Home() {
   const [apy, setApy] = useState<number>(0)
   const [btcAddress, setBtcAddress] = useState<string>('')
   const [starknetAddress, setStarknetAddress] = useState<string>('')
+  const [history, setHistory] = useState<any[]>([])
   const apiBase = useMemo(() => process.env.NEXT_PUBLIC_API_BASE || 'http://localhost:4000', [])
 
   const refresh = async () => {
     try {
       const query = new URLSearchParams({ btcAddress, starknetAddress }).toString()
-      const [b, a] = await Promise.all([
+      const [b, a, h] = await Promise.all([
         fetch(`${apiBase}/balance?${query}`).then((r) => r.json()),
         fetch(`${apiBase}/apy`).then((r) => r.json()),
+        fetch(`${apiBase}/history?${query}`).then((r) => r.json()),
       ])
       setBalance(b.balance)
       setApy(a.apy)
+      setHistory(h.history || [])
     } catch (e: any) {
       console.error(e)
     }
   }
 
   const deposit = async () => {
-    setStatus('Processing deposit...')
+    setStatus('Bridging BTC and sending on-chain deposit...')
     try {
-      await fetch(`${apiBase}/deposit`, {
+      const resp = await fetch(`${apiBase}/deposit`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ btcAddress, starknetAddress, amount: 0.01 }),
       }).then((r) => r.json())
-      setStatus('Deposited & Auto-invested ✅')
+      const bridgeId = resp?.bridge?.txId || resp?.bridge?.id || 'submitted'
+      const onchainHash = resp?.onchainTx?.transaction_hash || resp?.onchainTx?.hash || 'sent'
+      setStatus(`Deposit submitted: Bridge ${bridgeId}, On-chain ${onchainHash}`)
       await refresh()
     } catch (e: any) {
       setStatus(`Error: ${e.message}`)
@@ -39,14 +44,16 @@ export default function Home() {
   }
 
   const withdraw = async () => {
-    setStatus('Processing withdraw...')
+    setStatus('Submitting on-chain withdraw and reverse bridge...')
     try {
-      await fetch(`${apiBase}/withdraw`, {
+      const resp = await fetch(`${apiBase}/withdraw`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ btcAddress, starknetAddress, amount: 0.01 }),
       }).then((r) => r.json())
-      setStatus('Withdraw submitted ✅')
+      const bridgeId = resp?.bridge?.txId || resp?.bridge?.id || 'submitted'
+      const onchainHash = resp?.onchainTx?.transaction_hash || resp?.onchainTx?.hash || 'sent'
+      setStatus(`Withdraw submitted: On-chain ${onchainHash}, Bridge ${bridgeId}`)
       await refresh()
     } catch (e: any) {
       setStatus(`Error: ${e.message}`)
@@ -126,6 +133,20 @@ export default function Home() {
         <div className="p-4 rounded-xl border bg-white shadow-sm">
           <div className="text-slate-500">Deposited BTC</div>
           <div className="text-xl font-semibold">{balance}</div>
+        </div>
+        <div className="p-4 rounded-xl border bg-white shadow-sm">
+          <div className="text-slate-500">Recent Activity</div>
+          <div className="text-sm max-h-40 overflow-auto space-y-1">
+            {history.length === 0 && <div className="text-slate-400">No transactions</div>}
+            {history.map((h: any, idx: number) => (
+              <div key={idx} className="flex items-center justify-between">
+                <div>
+                  <span className="font-medium capitalize">{h.type}</span> · {h.amount}
+                </div>
+                <div className="text-slate-400 text-xs">{new Date(h.t).toLocaleTimeString()}</div>
+              </div>
+            ))}
+          </div>
         </div>
       </div>
       <p className="mt-2 text-sm text-slate-700">{status}</p>

@@ -66,6 +66,19 @@ Create a `.env` at the repo root with:
 - GET /apy
 - GET /history?btcAddress&starknetAddress
 
+## E2E Demo Script
+
+Run the end-to-end demo against a running backend:
+
+```
+API_BASE=http://localhost:4000 \
+BTC_ADDRESS=tb1qexamplebtcaddr... \
+STARKNET_ADDRESS=0xYOUR_TESTNET_STARKNET_ADDRESS \
+node scripts/e2e-demo.js
+```
+
+The script performs: deposit → balance verify → withdraw → balance verify, printing responses to stdout.
+
 ## Contract
 - deposit_btc(amount)
 - withdraw_btc(amount)
