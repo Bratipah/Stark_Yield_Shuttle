@@ -11,9 +11,17 @@ A hackathon-ready dApp to bridge BTC to Starknet and auto-deposit into a yield v
 
 1) Backend
 ```
-cp .env.example .env
-# set CONTRACT_ADDRESS, STARKNET_RPC_URL, ATOMIQ_BASE_URL, ATOMIQ_API_KEY
-# optionally set STARKNET_ACCOUNT_ADDRESS, STARKNET_PRIVATE_KEY if backend signs owner calls
+npm i --prefix backend
+# Create a .env at repo root with:
+# PORT=4000
+# NEXT_PUBLIC_API_BASE=http://localhost:4000
+# STARKNET_RPC_URL=https://starknet-sepolia.public.blastapi.io/rpc/v0_7
+# CONTRACT_ADDRESS=0xYOUR_TESTNET_CONTRACT_ADDRESS
+# STARKNET_ACCOUNT_ADDRESS=0xYOUR_TESTNET_ACCOUNT_ADDRESS
+# STARKNET_PRIVATE_KEY=0xYOUR_TESTNET_PRIVATE_KEY
+# ATOMIQ_BASE_URL=https://api.testnet.atomiq.example.com
+# ATOMIQ_API_KEY=your-api-key
+# PROTOCOL_APY_URL=https://api.vesu.example.com/v1/apy
 node backend/server.js
 ```
 
@@ -26,7 +34,7 @@ Open http://localhost:3000
 
 ## Environment
 
-Create a `.env` at the repo root (see `.env.example`):
+Create a `.env` at the repo root with:
 
 - PORT: Backend port (default 4000)
 - NEXT_PUBLIC_API_BASE: Frontend → Backend base URL
@@ -52,8 +60,8 @@ Create a `.env` at the repo root (see `.env.example`):
 - Observability: `/history` endpoint exposes bridge and on-chain txs for UI
 
 ## API
-- POST /deposit { btcAddress, starknetAddress, amount }
-- POST /withdraw { btcAddress, starknetAddress, amount }
+- POST /deposit { btcAddress, starknetAddress, amount } → { bridge, onchainTx, balance }
+- POST /withdraw { btcAddress, starknetAddress, amount } → { bridge, onchainTx, balance }
 - GET /balance?btcAddress&starknetAddress
 - GET /apy
 - GET /history?btcAddress&starknetAddress
