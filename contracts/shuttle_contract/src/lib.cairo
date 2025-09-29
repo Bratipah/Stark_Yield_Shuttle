@@ -48,6 +48,37 @@ mod ShuttleContract {
         total_btc::write(current_total - amount);
     }
 
+    #[event]
+    fn Deposited { user: ContractAddress, amount: felt252 }
+
+    #[event]
+    fn Withdrawn { user: ContractAddress, amount: felt252 }
+
+    #[external]
+    fn deposit_for(user: ContractAddress, amount: felt252) {
+        let caller: ContractAddress = get_caller_address();
+        let owner_addr = owner::read();
+        assert(caller == owner_addr, 'ONLY_OWNER');
+        let current_total = total_btc::read();
+        total_btc::write(current_total + amount);
+        let prev = user_balances::read(user);
+        user_balances::write(user, prev + amount);
+        emit Deposited { user: user, amount: amount };
+    }
+
+    #[external]
+    fn withdraw_for(user: ContractAddress, amount: felt252) {
+        let caller: ContractAddress = get_caller_address();
+        let owner_addr = owner::read();
+        assert(caller == owner_addr, 'ONLY_OWNER');
+        let prev = user_balances::read(user);
+        assert(prev >= amount, 'INSUFFICIENT_BAL');
+        user_balances::write(user, prev - amount);
+        let current_total = total_btc::read();
+        total_btc::write(current_total - amount);
+        emit Withdrawn { user: user, amount: amount };
+    }
+
     #[view]
     fn balance() -> felt252 {
         total_btc::read()
