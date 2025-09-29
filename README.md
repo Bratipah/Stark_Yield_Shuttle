@@ -93,5 +93,19 @@ scarb build
 scarb test
 ```
 
+## Deploy (Testnet)
+
+Compile contracts, then declare and deploy using the script:
+
+```
+cd contracts/shuttle_contract && scarb build && cd ../..
+STARKNET_RPC_URL=https://starknet-sepolia.public.blastapi.io/rpc/v0_7 \
+STARKNET_ACCOUNT_ADDRESS=0xYOUR_TESTNET_ACCOUNT_ADDRESS \
+STARKNET_PRIVATE_KEY=0xYOUR_TESTNET_PRIVATE_KEY \
+node scripts/deploy-shuttle.js
+```
+
+Copy the printed `contract_address` into your `.env` as `CONTRACT_ADDRESS` and `NEXT_PUBLIC_CONTRACT_ADDRESS`.
+
 ## Pitch
 "We built the simplest way for Bitcoiners to earn DeFi yield on Starknet — one click, one button, one flow."
