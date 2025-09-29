@@ -1,26 +1,46 @@
 const express = require('express');
 const cors = require('cors');
 const bodyParser = require('body-parser');
+const rateLimit = require('express-rate-limit');
+const axios = require('axios');
 require('dotenv').config();
-
-// NOTE: Placeholder; verify actual SDK name and methods.
-let Atomiq;
-try {
-  Atomiq = require('atomiq-sdk');
-} catch (e) {
-  console.warn('atomiq-sdk not installed; using mock bridge.');
-  Atomiq = {
-    async bridgeBTC({ btcAddress, amount }) {
-      return { txId: 'mock-btc-bridge', btcAddress, amount };
-    },
-  };
-}
 
 const app = express();
 app.use(cors());
 app.use(bodyParser.json());
+app.use(
+  rateLimit({
+    windowMs: 60 * 1000,
+    max: 60,
+    standardHeaders: true,
+    legacyHeaders: false,
+  })
+);
 
-let balances = {};
+// In-memory transaction history
+const history = [];
+
+// Atomiq HTTP adapter
+const ATOMIQ_BASE_URL = process.env.ATOMIQ_BASE_URL;
+const ATOMIQ_API_KEY = process.env.ATOMIQ_API_KEY;
+const atomiqClient = axios.create({
+  baseURL: ATOMIQ_BASE_URL,
+  timeout: 15000,
+  headers: ATOMIQ_API_KEY ? { Authorization: `Bearer ${ATOMIQ_API_KEY}` } : {},
+});
+
+const Atomiq = {
+  async bridgeBTC({ btcAddress, amount }) {
+    if (!ATOMIQ_BASE_URL) throw new Error('ATOMIQ_BASE_URL not configured');
+    const { data } = await atomiqClient.post('/bridge', { btcAddress, amount });
+    return data; // expected: { txId, ... }
+  },
+  async reverseBridgeBTC({ btcAddress, amount }) {
+    if (!ATOMIQ_BASE_URL) throw new Error('ATOMIQ_BASE_URL not configured');
+    const { data } = await atomiqClient.post('/redeem', { btcAddress, amount });
+    return data; // expected: { txId, ... }
+  },
+};
 
 async function readOnchainBalance(starknetAddress) {
   try {
@@ -48,35 +68,93 @@ async function readOnchainBalance(starknetAddress) {
   }
 }
 
+async function getContractForInvoke() {
+  const CONTRACT_ADDRESS = process.env.CONTRACT_ADDRESS;
+  const STARKNET_RPC_URL = process.env.STARKNET_RPC_URL || 'https://starknet-mainnet.public.blastapi.io/rpc/v0_7';
+  const STARKNET_ACCOUNT_ADDRESS = process.env.STARKNET_ACCOUNT_ADDRESS;
+  const STARKNET_PRIVATE_KEY = process.env.STARKNET_PRIVATE_KEY;
+  if (!CONTRACT_ADDRESS || !STARKNET_ACCOUNT_ADDRESS || !STARKNET_PRIVATE_KEY) {
+    throw new Error('Starknet account or contract env not configured');
+  }
+  const { RpcProvider, Account, Contract } = await import('starknet');
+  const provider = new RpcProvider({ nodeUrl: STARKNET_RPC_URL });
+  const account = new Account(provider, STARKNET_ACCOUNT_ADDRESS, STARKNET_PRIVATE_KEY);
+  const abi = [
+    {
+      name: 'deposit_for',
+      type: 'function',
+      state_mutability: 'external',
+      inputs: [
+        { name: 'user', type: 'ContractAddress' },
+        { name: 'amount', type: 'felt252' },
+      ],
+      outputs: [],
+    },
+    {
+      name: 'withdraw_for',
+      type: 'function',
+      state_mutability: 'external',
+      inputs: [
+        { name: 'user', type: 'ContractAddress' },
+        { name: 'amount', type: 'felt252' },
+      ],
+      outputs: [],
+    },
+  ];
+  const contract = new Contract(abi, CONTRACT_ADDRESS, account);
+  return contract;
+}
+
 app.post('/deposit', async (req, res) => {
   const { btcAddress, starknetAddress, amount } = req.body || {};
-  if (!btcAddress || !amount) {
-    return res.status(400).json({ error: 'btcAddress and amount required' });
+  const amt = Number(amount);
+  if (!btcAddress || !starknetAddress || !Number.isFinite(amt) || amt <= 0) {
+    return res.status(400).json({ error: 'btcAddress, starknetAddress and positive amount required' });
   }
   try {
-    const tx = await Atomiq.bridgeBTC({ btcAddress, amount });
-    const key = starknetAddress || btcAddress;
-    const prev = balances[key] || 0;
-    balances[key] = prev + Number(amount);
-    res.json({ tx, balance: balances[key] });
+    const bridge = await Atomiq.bridgeBTC({ btcAddress, amount: amt });
+    const contract = await getContractForInvoke();
+    const invoke = await contract.deposit_for(starknetAddress, amt);
+    history.push({
+      type: 'deposit',
+      t: Date.now(),
+      btcAddress,
+      starknetAddress,
+      amount: amt,
+      atomiq: bridge,
+      onchain: invoke,
+    });
+    const onchainBalance = await readOnchainBalance(starknetAddress);
+    res.json({ bridge, onchainTx: invoke, balance: onchainBalance });
   } catch (err) {
-    res.status(500).json({ error: err?.message || 'Bridge failed' });
+    res.status(500).json({ error: err?.message || 'Deposit failed' });
   }
 });
 
 app.post('/withdraw', async (req, res) => {
   const { btcAddress, starknetAddress, amount } = req.body || {};
-  if (!btcAddress || !amount) {
-    return res.status(400).json({ error: 'btcAddress and amount required' });
+  const amt = Number(amount);
+  if (!btcAddress || !starknetAddress || !Number.isFinite(amt) || amt <= 0) {
+    return res.status(400).json({ error: 'btcAddress, starknetAddress and positive amount required' });
   }
-  const key = starknetAddress || btcAddress;
-  const current = balances[key] || 0;
-  if (Number(amount) > current) {
-    return res.status(400).json({ error: 'Insufficient balance' });
+  try {
+    const contract = await getContractForInvoke();
+    const invoke = await contract.withdraw_for(starknetAddress, amt);
+    const bridge = await Atomiq.reverseBridgeBTC({ btcAddress, amount: amt });
+    history.push({
+      type: 'withdraw',
+      t: Date.now(),
+      btcAddress,
+      starknetAddress,
+      amount: amt,
+      atomiq: bridge,
+      onchain: invoke,
+    });
+    const onchainBalance = await readOnchainBalance(starknetAddress);
+    res.json({ bridge, onchainTx: invoke, balance: onchainBalance });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || 'Withdraw failed' });
   }
-  // TODO: Call yield protocol withdraw + Atomiq reverse bridge to btcAddress
-  balances[key] = current - Number(amount);
-  res.json({ tx: { txId: 'mock-withdraw' }, balance: balances[key] });
 });
 
 app.get('/balance', async (req, res) => {
@@ -86,21 +164,29 @@ app.get('/balance', async (req, res) => {
   }
   const onchain = await readOnchainBalance(starknetAddress);
   if (onchain != null) return res.json({ balance: onchain });
-  const key = starknetAddress || btcAddress;
-  return res.json({ balance: balances[key] || 0 });
+  return res.json({ balance: 0 });
 });
 
 app.get('/apy', async (_req, res) => {
   try {
-    // TODO: Replace with actual Vesu/Troves API when available
-    // Example placeholder fetch
-    // const r = await fetch('https://api.vesu.fi/v1/apy');
-    // const j = await r.json();
-    // return res.json({ apy: j?.wbtc?.apy ?? 8.5 });
-    return res.json({ apy: 8.5 });
+    const url = process.env.PROTOCOL_APY_URL;
+    if (!url) return res.json({ apy: 8.5 });
+    const { data } = await axios.get(url, { timeout: 10000 });
+    const apy = typeof data === 'number' ? data : (data?.wbtc?.apy ?? data?.apy ?? 8.5);
+    return res.json({ apy });
   } catch (_e) {
     return res.json({ apy: 8.5 });
   }
+});
+
+app.get('/history', async (req, res) => {
+  const { btcAddress, starknetAddress } = req.query || {};
+  const filtered = history.filter((h) => {
+    if (btcAddress && h.btcAddress !== btcAddress) return false;
+    if (starknetAddress && h.starknetAddress !== starknetAddress) return false;
+    return true;
+  });
+  res.json({ history: filtered });
 });
 
 const PORT = process.env.PORT || 4000;
