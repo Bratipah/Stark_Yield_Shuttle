@@ -5,87 +5,99 @@ mod ShuttleContract {
 
     #[storage]
     struct Storage {
-        total_btc: felt252,
+        total_btc: u128,
         owner: ContractAddress,
         // map user -> balance
-        user_balances: LegacyMap::<ContractAddress, felt252>,
+        user_balances: LegacyMap::<ContractAddress, u128>,
         // optional: yield vault address placeholder
         vault: ContractAddress,
     }
 
     #[constructor]
-    fn constructor() {
+    fn constructor(ref self: ContractState) {
         let caller: ContractAddress = get_caller_address();
-        owner::write(caller);
-        total_btc::write(0);
-        vault::write(ContractAddress::from(0));
+        self.owner.write(caller);
+        self.total_btc.write(0_u128);
+        // vault left unset
     }
 
-    #[external]
-    fn deposit_btc(amount: felt252) {
+    #[external(v0)]
+    fn deposit_btc(ref self: ContractState, amount: u128) {
         // Accept bridged BTC (via Atomiq SDK wrapped asset)
-        let current_total = total_btc::read();
-        total_btc::write(current_total + amount);
+        let current_total = self.total_btc.read();
+        self.total_btc.write(current_total + amount);
         let user: ContractAddress = get_caller_address();
-        let prev = user_balances::read(user);
-        user_balances::write(user, prev + amount);
+        let prev = self.user_balances.read(user);
+        self.user_balances.write(user, prev + amount);
         // TODO: Call yield protocol contract e.g. Vesu/Troves
     }
 
-    #[external]
-    fn auto_invest() {
+    #[external(v0)]
+    fn auto_invest(ref self: ContractState) {
         // TODO: deposit into chosen yield vault
     }
 
-    #[external]
-    fn withdraw_btc(amount: felt252) {
+    #[external(v0)]
+    fn withdraw_btc(ref self: ContractState, amount: u128) {
         // Withdraw from yield protocol and return BTC
         let user: ContractAddress = get_caller_address();
-        let prev = user_balances::read(user);
-        assert(prev >= amount, 'INSUFFICIENT_BAL');
-        user_balances::write(user, prev - amount);
-        let current_total = total_btc::read();
-        total_btc::write(current_total - amount);
+        let prev = self.user_balances.read(user);
+        if (prev < amount) {
+            panic_with_felt252('INSUFFICIENT_BAL');
+        }
+        self.user_balances.write(user, prev - amount);
+        let current_total = self.total_btc.read();
+        self.total_btc.write(current_total - amount);
     }
 
+    // Events
     #[event]
-    fn Deposited { user: ContractAddress, amount: felt252 }
+    #[derive(Drop, starknet::Event)]
+    enum Event {
+        Deposited: Deposited,
+        Withdrawn: Withdrawn,
+    }
 
-    #[event]
-    fn Withdrawn { user: ContractAddress, amount: felt252 }
+    #[derive(Drop, starknet::Event)]
+    struct Deposited { user: ContractAddress, amount: u128 }
 
-    #[external]
-    fn deposit_for(user: ContractAddress, amount: felt252) {
+    #[derive(Drop, starknet::Event)]
+    struct Withdrawn { user: ContractAddress, amount: u128 }
+
+    #[external(v0)]
+    fn deposit_for(ref self: ContractState, user: ContractAddress, amount: u128) {
         let caller: ContractAddress = get_caller_address();
-        let owner_addr = owner::read();
+        let owner_addr = self.owner.read();
         assert(caller == owner_addr, 'ONLY_OWNER');
-        let current_total = total_btc::read();
-        total_btc::write(current_total + amount);
-        let prev = user_balances::read(user);
-        user_balances::write(user, prev + amount);
-        emit Deposited { user: user, amount: amount };
+        let current_total = self.total_btc.read();
+        self.total_btc.write(current_total + amount);
+        let prev = self.user_balances.read(user);
+        self.user_balances.write(user, prev + amount);
+        self.emit(Deposited { user: user, amount: amount });
     }
 
-    #[external]
-    fn withdraw_for(user: ContractAddress, amount: felt252) {
+    #[external(v0)]
+    fn withdraw_for(ref self: ContractState, user: ContractAddress, amount: u128) {
         let caller: ContractAddress = get_caller_address();
-        let owner_addr = owner::read();
+        let owner_addr = self.owner.read();
         assert(caller == owner_addr, 'ONLY_OWNER');
-        let prev = user_balances::read(user);
-        assert(prev >= amount, 'INSUFFICIENT_BAL');
-        user_balances::write(user, prev - amount);
-        let current_total = total_btc::read();
-        total_btc::write(current_total - amount);
-        emit Withdrawn { user: user, amount: amount };
+        let prev = self.user_balances.read(user);
+        if (prev < amount) {
+            panic_with_felt252('INSUFFICIENT_BAL');
+        }
+        self.user_balances.write(user, prev - amount);
+        let current_total = self.total_btc.read();
+        self.total_btc.write(current_total - amount);
+        self.emit(Withdrawn { user: user, amount: amount });
     }
 
-    #[view]
-    fn balance() -> felt252 {
-        total_btc::read()
+    #[external(v0)]
+    fn balance(self: @ContractState) -> u128 {
+        self.total_btc.read()
     }
 
-    #[view]
-    fn get_balance(user: ContractAddress) -> felt252 {
-        user_balances::read(user)
+    #[external(v0)]
+    fn get_balance(self: @ContractState, user: ContractAddress) -> u128 {
+        self.user_balances.read(user)
     }
 }

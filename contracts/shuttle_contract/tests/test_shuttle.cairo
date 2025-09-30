@@ -11,11 +11,11 @@ mod tests {
 
         ShuttleContract::constructor();
 
-        ShuttleContract::deposit_btc(1); // 0.01 BTC in demo units
+        ShuttleContract::deposit_btc(1_u128); // 0.01 BTC in demo units
         let bal1 = ShuttleContract::get_balance(user);
         assert(bal1 == 1, 'balance after deposit');
 
-        ShuttleContract::withdraw_btc(0);
+        ShuttleContract::withdraw_btc(0_u128);
         let bal2 = ShuttleContract::get_balance(user);
         assert(bal2 == 1, 'balance unchanged when withdrawing zero');
     }
@@ -28,11 +28,11 @@ mod tests {
         // constructor sets owner = caller, so simulate that
         set_caller_address(owner);
 
-        ShuttleContract::deposit_for(alice, 5);
+        ShuttleContract::deposit_for(alice, 5_u128);
         let bal = ShuttleContract::get_balance(alice);
         assert(bal == 5, 'deposit_for updates alice balance');
 
-        ShuttleContract::withdraw_for(alice, 3);
+        ShuttleContract::withdraw_for(alice, 3_u128);
         let bal2 = ShuttleContract::get_balance(alice);
         assert(bal2 == 2, 'withdraw_for deducts correctly');
     }
@@ -46,7 +46,7 @@ mod tests {
         let bob = ContractAddress::from(0xB);
         set_caller_address(bob);
         let alice = ContractAddress::from(0xA);
-        ShuttleContract::deposit_for(alice, 1);
+        ShuttleContract::deposit_for(alice, 1_u128);
     }
 }
 
