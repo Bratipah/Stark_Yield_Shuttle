@@ -15,13 +15,14 @@ npm i --prefix backend
 # Create a .env at repo root with:
 # PORT=4000
 # NEXT_PUBLIC_API_BASE=http://localhost:4000
-# STARKNET_RPC_URL=https://starknet-sepolia.public.blastapi.io/rpc/v0_7
+# STARKNET_RPC_URL=https://starknet-sepolia.public.blastapi.io/rpc/v0_8
 # CONTRACT_ADDRESS=0xYOUR_TESTNET_CONTRACT_ADDRESS
 # STARKNET_ACCOUNT_ADDRESS=0xYOUR_TESTNET_ACCOUNT_ADDRESS
 # STARKNET_PRIVATE_KEY=0xYOUR_TESTNET_PRIVATE_KEY
 # ATOMIQ_BASE_URL=https://api.testnet.atomiq.example.com
 # ATOMIQ_API_KEY=your-api-key
 # PROTOCOL_APY_URL=https://api.vesu.example.com/v1/apy
+# BRIDGE_SIMULATE=true
 node backend/server.js
 ```
 
@@ -43,6 +44,7 @@ Create a `.env` at the repo root with:
 - STARKNET_ACCOUNT_ADDRESS / STARKNET_PRIVATE_KEY: Owner account used for `deposit_for`/`withdraw_for`
 - ATOMIQ_BASE_URL / ATOMIQ_API_KEY: Atomiq testnet API
 - PROTOCOL_APY_URL: Yield APY source (e.g., Vesu)
+- BRIDGE_SIMULATE: Set to `true` to simulate bridge when Atomiq creds are absent
 
 ## Demo Flow
 - Connect Xverse and Starknet wallets
@@ -95,17 +97,26 @@ scarb test
 
 ## Deploy (Testnet)
 
-Compile contracts, then declare and deploy using the script:
+Compile contracts, then declare and deploy using the script (RPC 0.8 required). The constructor sets the contract owner; the deploy script passes your account address as owner.
 
 ```
 cd contracts/shuttle_contract && scarb build && cd ../..
-STARKNET_RPC_URL=https://starknet-sepolia.public.blastapi.io/rpc/v0_7 \
+STARKNET_RPC_URL=https://starknet-sepolia.public.blastapi.io/rpc/v0_8 \
 STARKNET_ACCOUNT_ADDRESS=0xYOUR_TESTNET_ACCOUNT_ADDRESS \
 STARKNET_PRIVATE_KEY=0xYOUR_TESTNET_PRIVATE_KEY \
 node scripts/deploy-shuttle.js
 ```
 
 Copy the printed `contract_address` into your `.env` as `CONTRACT_ADDRESS` and `NEXT_PUBLIC_CONTRACT_ADDRESS`.
+
+### Current testnet deployment (Sepolia)
+
+- Contract address: `0x25f7539cdad7a67c5dd0f6f348695bb491418126d3b00c0eaa0c5aaa2d2cb1f`
+- RPC: `https://starknet-sepolia.public.blastapi.io/rpc/v0_8`
+
+Notes:
+- Amount units are integers (`u128`) in demo units, not decimals.
+- `/deposit` and `/withdraw` wait for on-chain inclusion; allow 15–60s depending on network.
 
 ## Pitch
 "We built the simplest way for Bitcoiners to earn DeFi yield on Starknet — one click, one button, one flow."
