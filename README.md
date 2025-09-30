@@ -81,6 +81,36 @@ node scripts/e2e-demo.js
 
 The script performs: deposit → balance verify → withdraw → balance verify, printing responses to stdout.
 
+## Demo Results
+
+Successful E2E run (simulated bridge, Sepolia RPC v0_8):
+
+```
+Step 1: Refresh balances
+Initial balance: { balance: 1 }
+
+Step 2: Deposit
+Deposit response: {
+  bridge: { txId: 'sim-bridge-...', btcAddress: 'tb1q...xset', amount: 1 },
+  onchainTx: { transaction_hash: '0x490a8c...c7cdf' },
+  balance: 2
+}
+
+Step 3: Verify balance
+Post-deposit balance: { balance: 2 }
+
+Step 4: Withdraw
+Withdraw response: {
+  bridge: { txId: 'sim-redeem-...', btcAddress: 'tb1q...xset', amount: 1 },
+  onchainTx: { transaction_hash: '0x3a280e...1d46' },
+  balance: 2
+}
+
+Step 5: Verify final balance
+Final balance: { balance: 1 }
+E2E demo complete ✅
+```
+
 ## Contract
 - deposit_btc(amount)
 - withdraw_btc(amount)
