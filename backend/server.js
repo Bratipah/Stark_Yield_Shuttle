@@ -23,6 +23,7 @@ const history = [];
 // Atomiq HTTP adapter
 const ATOMIQ_BASE_URL = process.env.ATOMIQ_BASE_URL;
 const ATOMIQ_API_KEY = process.env.ATOMIQ_API_KEY;
+const BRIDGE_SIMULATE = String(process.env.BRIDGE_SIMULATE || '').toLowerCase() === 'true';
 const atomiqClient = axios.create({
   baseURL: ATOMIQ_BASE_URL,
   timeout: 15000,
@@ -31,12 +32,16 @@ const atomiqClient = axios.create({
 
 const Atomiq = {
   async bridgeBTC({ btcAddress, amount }) {
-    if (!ATOMIQ_BASE_URL) throw new Error('ATOMIQ_BASE_URL not configured');
+    if (BRIDGE_SIMULATE || !ATOMIQ_BASE_URL) {
+      return { txId: `sim-bridge-${Date.now()}`, btcAddress, amount };
+    }
     const { data } = await atomiqClient.post('/bridge', { btcAddress, amount });
     return data; // expected: { txId, ... }
   },
   async reverseBridgeBTC({ btcAddress, amount }) {
-    if (!ATOMIQ_BASE_URL) throw new Error('ATOMIQ_BASE_URL not configured');
+    if (BRIDGE_SIMULATE || !ATOMIQ_BASE_URL) {
+      return { txId: `sim-redeem-${Date.now()}`, btcAddress, amount };
+    }
     const { data } = await atomiqClient.post('/redeem', { btcAddress, amount });
     return data; // expected: { txId, ... }
   },
