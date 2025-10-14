@@ -8,6 +8,11 @@ export default function Home() {
   const [btcAddress, setBtcAddress] = useState<string>('')
   const [starknetAddress, setStarknetAddress] = useState<string>('')
   const [history, setHistory] = useState<any[]>([])
+  const [showQuote, setShowQuote] = useState(false)
+  const [tosAccepted, setTosAccepted] = useState(false)
+  const [quote, setQuote] = useState<any | null>(null)
+  const [minerMode, setMinerMode] = useState(false)
+  const [minerBatches, setMinerBatches] = useState<string>('0.01, 0.02')
   const apiBase = useMemo(() => process.env.NEXT_PUBLIC_API_BASE || 'http://localhost:4000', [])
 
   const refresh = async () => {
@@ -26,36 +31,72 @@ export default function Home() {
     }
   }
 
+  const openQuote = async (action: 'deposit'|'withdraw' = 'deposit') => {
+    setStatus('Fetching quote...')
+    try {
+      const pre = await fetch(`${apiBase}/preflight`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tosAccepted, btcAddress, starknetAddress })
+      }).then(r=>r.json())
+      if (!pre?.allowed) { setStatus(`Blocked: ${pre?.reason || 'Preflight failed'}`); return }
+      const q = await fetch(`${apiBase}/quote`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ amount: 0.01, action })
+      }).then(r=>r.json())
+      setQuote(q)
+      setShowQuote(true)
+      setStatus('')
+    } catch (e:any) {
+      setStatus(`Quote error: ${e.message}`)
+    }
+  }
+
   const deposit = async () => {
-    setStatus('Bridging BTC and sending on-chain deposit...')
+    setStatus('Initiating bridge...')
     try {
       const resp = await fetch(`${apiBase}/deposit`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ btcAddress, starknetAddress, amount: 0.01 }),
-      }).then((r) => r.json())
+        body: JSON.stringify({ btcAddress, starknetAddress, amount: 0.01 })
+      }).then(r=>r.json())
       const bridgeId = resp?.bridge?.txId || resp?.bridge?.id || 'submitted'
-      const onchainHash = resp?.onchainTx?.transaction_hash || resp?.onchainTx?.hash || 'sent'
-      setStatus(`Deposit submitted: Bridge ${bridgeId}, On-chain ${onchainHash}`)
+      setStatus(`Bridge submitted: ${bridgeId}. Now sign Starknet transaction...`)
+      const { connect } = await import('starknetkit')
+      const res: any = await connect()
+      if (!res?.account) throw new Error('Wallet not connected')
+      const account = res.account
+      const CONTRACT_ADDRESS = process.env.NEXT_PUBLIC_CONTRACT_ADDRESS as string | undefined
+      if (!CONTRACT_ADDRESS) throw new Error('Contract not configured')
+      const calldata = [BigInt(Math.floor(0.01 * 1))] // demo units
+      const invoke = await account.execute({ contractAddress: CONTRACT_ADDRESS, entrypoint: 'deposit_btc', calldata })
+      setStatus(`On-chain sent: ${invoke?.transaction_hash || 'sent'}`)
       await refresh()
-    } catch (e: any) {
+    } catch (e:any) {
       setStatus(`Error: ${e.message}`)
     }
   }
 
   const withdraw = async () => {
-    setStatus('Submitting on-chain withdraw and reverse bridge...')
+    setStatus('Sending on-chain withdraw...')
     try {
+      const { connect } = await import('starknetkit')
+      const res: any = await connect()
+      if (!res?.account) throw new Error('Wallet not connected')
+      const account = res.account
+      const CONTRACT_ADDRESS = process.env.NEXT_PUBLIC_CONTRACT_ADDRESS as string | undefined
+      if (!CONTRACT_ADDRESS) throw new Error('Contract not configured')
+      const calldata = [BigInt(Math.floor(0.01 * 1))]
+      const invoke = await account.execute({ contractAddress: CONTRACT_ADDRESS, entrypoint: 'withdraw_btc', calldata })
+      const txHash = invoke?.transaction_hash
+      setStatus(`On-chain withdraw sent: ${txHash || 'sent'}`)
       const resp = await fetch(`${apiBase}/withdraw`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ btcAddress, starknetAddress, amount: 0.01 }),
-      }).then((r) => r.json())
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ btcAddress, starknetAddress, amount: 0.01, onchainTxHash: txHash })
+      }).then(r=>r.json())
       const bridgeId = resp?.bridge?.txId || resp?.bridge?.id || 'submitted'
-      const onchainHash = resp?.onchainTx?.transaction_hash || resp?.onchainTx?.hash || 'sent'
-      setStatus(`Withdraw submitted: On-chain ${onchainHash}, Bridge ${bridgeId}`)
+      setStatus(`Reverse bridge submitted: ${bridgeId}`)
       await refresh()
-    } catch (e: any) {
+    } catch (e:any) {
       setStatus(`Error: ${e.message}`)
     }
   }
@@ -125,9 +166,56 @@ export default function Home() {
         </div>
       </div>
       <div className="flex gap-3">
-        <button onClick={deposit} className="p-3 bg-blue-600 text-white rounded-xl">Deposit BTC to Earn Yield</button>
-        <button onClick={withdraw} className="p-3 bg-slate-700 text-white rounded-xl">Withdraw</button>
+        <button onClick={() => openQuote('deposit')} className="p-3 bg-blue-600 text-white rounded-xl">Get Deposit Quote</button>
+        <button onClick={() => openQuote('withdraw')} className="p-3 bg-slate-700 text-white rounded-xl">Get Withdraw Quote</button>
         <button onClick={refresh} className="p-3 bg-slate-500 text-white rounded-xl">Refresh</button>
+      </div>
+      {showQuote && quote && (
+        <div className="p-4 mt-2 rounded-xl border bg-white shadow-sm w-full max-w-2xl">
+          <div className="font-semibold mb-2">Quote</div>
+          <div className="text-sm text-slate-700">BTC L1 fee: {quote.btcL1Fee} | Starknet fee: {quote.starknetFee} | Margin: {quote.marginFee} | Total: {quote.totalFee} | ETA: {quote.etaSecs}s</div>
+          <label className="mt-2 flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={tosAccepted} onChange={(e)=>setTosAccepted(e.target.checked)} />
+            I accept Terms and Risk disclosures
+          </label>
+          <div className="mt-3 flex gap-2">
+            <button onClick={() => { setShowQuote(false); deposit() }} disabled={!tosAccepted} className="p-2 bg-blue-600 text-white rounded-lg">Proceed</button>
+            <button onClick={() => setShowQuote(false)} className="p-2 bg-slate-300 rounded-lg">Cancel</button>
+          </div>
+        </div>
+      )}
+
+      <div className="w-full max-w-3xl mt-6 p-4 rounded-xl border bg-white shadow-sm">
+        <div className="flex items-center justify-between">
+          <div className="font-semibold">Miner Mode</div>
+          <label className="text-sm flex items-center gap-2">
+            <input type="checkbox" checked={minerMode} onChange={(e)=>setMinerMode(e.target.checked)} /> Enable
+          </label>
+        </div>
+        {minerMode && (
+          <div className="mt-3">
+            <div className="text-sm text-slate-600 mb-2">Enter comma-separated deposit amounts (BTC demo units). We will request batch quotes and submit bridge intents.</div>
+            <textarea value={minerBatches} onChange={(e)=>setMinerBatches(e.target.value)} className="w-full p-2 border rounded" rows={3} />
+            <div className="mt-2 flex gap-2">
+              <button
+                onClick={async () => {
+                  setStatus('Submitting batch bridge intents...')
+                  try {
+                    const amounts = minerBatches.split(',').map((s)=>Number(s.trim())).filter((n)=>Number.isFinite(n) && n>0)
+                    for (const a of amounts) {
+                      await fetch(`${apiBase}/deposit`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ btcAddress, starknetAddress, amount: a, batch: true }) })
+                    }
+                    setStatus('Batch intents submitted. Execute on-chain deposits as desired.')
+                    await refresh()
+                  } catch (e:any) {
+                    setStatus(`Batch error: ${e.message}`)
+                  }
+                }}
+                className="p-2 bg-emerald-600 text-white rounded-lg"
+              >Submit Batch Intents</button>
+            </div>
+          </div>
+        )}
       </div>
       <div className="mt-2 grid grid-cols-2 gap-6">
         <div className="p-4 rounded-xl border bg-white shadow-sm">

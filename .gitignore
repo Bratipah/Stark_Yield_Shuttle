@@ -9,9 +9,8 @@ frontend/.vercel/
 
 # Env
 .env
-.env.*
-frontend/.env*
-backend/.env*
+frontend/.env
+backend/.env
 
 # Logs
 npm-debug.log*

@@ -23,6 +23,11 @@ npm i --prefix backend
 # ATOMIQ_API_KEY=your-api-key
 # PROTOCOL_APY_URL=https://api.vesu.example.com/v1/apy
 # BRIDGE_SIMULATE=true
+# OWNER_MODE=false
+# MARGIN_BPS=50
+# MIN_DEPOSIT=0.001
+# BATCH_DISCOUNT_BPS=10
+# ALLOWED_COUNTRIES=US,GB,DE
 node backend/server.js
 ```
 
@@ -46,10 +51,12 @@ Create a `.env` at the repo root with:
 - PROTOCOL_APY_URL: Yield APY source (e.g., Vesu)
 - BRIDGE_SIMULATE: Set to `true` to simulate bridge when Atomiq creds are absent
 
-## Demo Flow
+## Demo Flow (Non-custodial)
 - Connect Xverse and Starknet wallets
-- Click "Deposit BTC" (bridges via Atomiq, calls on-chain `deposit_for`)
-- See on-chain Deposited BTC and APY, and Withdraw (calls `withdraw_for` + reverse bridge)
+- Click "Get Deposit Quote" → accept ToS → proceed
+- Backend initiates bridge intent; wallet signs `deposit_btc(amount)`
+- Balance updates on-chain; APY fetched from provider
+- Withdraw: wallet signs `withdraw_btc(amount)` → backend initiates reverse bridge
 
 ## Success Criteria Coverage
 
@@ -61,9 +68,10 @@ Create a `.env` at the repo root with:
 - Reliability: Testnet deployment documented via `CONTRACT_ADDRESS`
 - Observability: `/history` endpoint exposes bridge and on-chain txs for UI
 
-## API
-- POST /deposit { btcAddress, starknetAddress, amount } → { bridge, onchainTx, balance }
-- POST /withdraw { btcAddress, starknetAddress, amount } → { bridge, onchainTx, balance }
+- POST /preflight { tosAccepted, btcAddress, starknetAddress } → { allowed }
+- POST /quote { amount, action, batch? } → { btcL1Fee, starknetFee, marginFee, batchDiscount, totalFee, minEnforced, etaSecs, batchEligible }
+- POST /deposit { btcAddress, starknetAddress, amount, batch? } → { bridge, instruction, mode }
+- POST /withdraw { btcAddress, starknetAddress, amount, onchainTxHash? } → { bridge, mode }
 - GET /balance?btcAddress&starknetAddress
 - GET /apy
 - GET /history?btcAddress&starknetAddress
@@ -117,6 +125,7 @@ E2E demo complete ✅
 - deposit_for(user, amount) [owner]
 - withdraw_for(user, amount) [owner]
 - get_balance(address)
+ - set_fee(bps, recipient) [owner]
 
 Build/Test:
 ```
@@ -146,7 +155,13 @@ Copy the printed `contract_address` into your `.env` as `CONTRACT_ADDRESS` and `
 
 Notes:
 - Amount units are integers (`u128`) in demo units, not decimals.
-- `/deposit` and `/withdraw` wait for on-chain inclusion; allow 15–60s depending on network.
+- In non-custodial mode, users sign `deposit_btc`/`withdraw_btc` from their Starknet wallet.
+- `OWNER_MODE=true` re-enables owner-executed flows for the demo script.
+
+## Regulatory & Risk Disclosures (MVP)
+- Uses partner bridge APIs; wrapped BTC entails counterparty risk.
+- Quotes include estimated BTC L1 and Starknet fees plus margin; actual fees may vary.
+- Service geofences by IP header and requires ToS acceptance; partner KYC handled separately.
 
 ## Pitch
 "We built the simplest way for Bitcoiners to earn DeFi yield on Starknet — one click, one button, one flow."

@@ -47,6 +47,80 @@ const Atomiq = {
   },
 };
 
+// Pricing and compliance env
+const OWNER_MODE = String(process.env.OWNER_MODE || '').toLowerCase() === 'true';
+const MARGIN_BPS = Number(process.env.MARGIN_BPS || 50); // 0.50%
+const MIN_DEPOSIT = Number(process.env.MIN_DEPOSIT || 0.001); // in BTC units for UI quoting
+const BATCH_DISCOUNT_BPS = Number(process.env.BATCH_DISCOUNT_BPS || 10); // 0.10%
+const ALLOWED_COUNTRIES = String(process.env.ALLOWED_COUNTRIES || '').split(',').map((s) => s.trim()).filter(Boolean);
+
+function countryAllowed(req) {
+  const country = req.headers['x-country'] || req.headers['cf-ipcountry'] || '';
+  if (ALLOWED_COUNTRIES.length === 0) return true;
+  return ALLOWED_COUNTRIES.includes(String(country).toUpperCase());
+}
+
+app.post('/preflight', async (req, res) => {
+  try {
+    const { tosAccepted, btcAddress, starknetAddress } = req.body || {};
+    if (!tosAccepted) return res.status(400).json({ allowed: false, reason: 'TOS_NOT_ACCEPTED' });
+    if (!countryAllowed(req)) return res.status(403).json({ allowed: false, reason: 'GEOFENCE' });
+    if (!btcAddress || !starknetAddress) return res.status(400).json({ allowed: false, reason: 'MISSING_ADDRESSES' });
+    // Partner KYC stub: assume allowed in MVP
+    return res.json({ allowed: true });
+  } catch (e) {
+    return res.status(500).json({ allowed: false, reason: 'SERVER_ERROR' });
+  }
+});
+
+app.post('/quote', async (req, res) => {
+  try {
+    const { amount, action = 'deposit', batch = false } = req.body || {};
+    const amt = Number(amount);
+    if (!Number.isFinite(amt) || amt <= 0) return res.status(400).json({ error: 'positive amount required' });
+    // BTC L1 fee (stub or partner estimate)
+    let btcL1Fee = 0.0001; // BTC, stub
+    try {
+      if (!BRIDGE_SIMULATE && ATOMIQ_BASE_URL) {
+        const { data } = await atomiqClient.get('/fee', { params: { amount: amt, action } });
+        if (data?.fee) btcL1Fee = Number(data.fee);
+      }
+    } catch (_e) {}
+
+    // Starknet fee estimation (rough): require CONTRACT_ADDRESS
+    let starknetFee = 0.00002; // BTC equivalent stub
+    try {
+      const CONTRACT_ADDRESS = process.env.CONTRACT_ADDRESS;
+      const STARKNET_RPC_URL = process.env.STARKNET_RPC_URL;
+      if (CONTRACT_ADDRESS && STARKNET_RPC_URL) {
+        const { RpcProvider, Contract } = await import('starknet');
+        const provider = new RpcProvider({ nodeUrl: STARKNET_RPC_URL });
+        const abi = [
+          { name: 'deposit_btc', type: 'function', state_mutability: 'external', inputs: [{ name: 'amount', type: 'core::integer::u128' }], outputs: [] },
+        ];
+        const contract = new Contract(abi, CONTRACT_ADDRESS, provider);
+        if (typeof contract.estimateInvokeFee === 'function') {
+          const feeRes = await contract.estimateInvokeFee('deposit_btc', [amt]);
+          // Convert gwei-like units to BTC stub: keep placeholder
+          if (feeRes?.overall_fee) {
+            starknetFee = Number(feeRes.overall_fee) / 1e18 / 20000; // naive: ETH -> USD -> BTC
+          }
+        }
+      }
+    } catch (_e) {}
+
+    const marginFee = (amt * (MARGIN_BPS / 10000));
+    const batchDiscount = batch ? (amt * (BATCH_DISCOUNT_BPS / 10000)) : 0;
+    const minEnforced = Math.max(amt, MIN_DEPOSIT);
+    const totalFee = btcL1Fee + starknetFee + marginFee - batchDiscount;
+    const etaSecs = batch ? 900 : 120; // batch window 15m vs 2m
+
+    return res.json({ btcL1Fee, starknetFee, marginFee, batchDiscount, totalFee, minEnforced, etaSecs, batchEligible: true });
+  } catch (e) {
+    return res.status(500).json({ error: 'quote_failed' });
+  }
+});
+
 async function readOnchainBalance(starknetAddress) {
   try {
     const CONTRACT_ADDRESS = process.env.CONTRACT_ADDRESS;
@@ -59,8 +133,8 @@ async function readOnchainBalance(starknetAddress) {
         name: 'get_balance',
         type: 'function',
         state_mutability: 'view',
-        inputs: [{ name: 'user', type: 'ContractAddress' }],
-        outputs: [{ name: 'res', type: 'felt252' }],
+        inputs: [{ name: 'user', type: 'core::starknet::contract_address::ContractAddress' }],
+        outputs: [{ name: 'res', type: 'core::integer::u128' }],
       },
     ];
     const contract = new Contract(abi, CONTRACT_ADDRESS, provider);
@@ -71,6 +145,17 @@ async function readOnchainBalance(starknetAddress) {
     console.warn('Onchain balance read failed:', err?.message);
     return null;
   }
+}
+
+async function waitForBalance({ starknetAddress, expectedDelta, maxMs = 120000, intervalMs = 3000 }) {
+  const start = Date.now();
+  const base = (await readOnchainBalance(starknetAddress)) ?? 0;
+  while (Date.now() - start < maxMs) {
+    const current = await readOnchainBalance(starknetAddress);
+    if (current != null && current >= base + expectedDelta) return current;
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+  return (await readOnchainBalance(starknetAddress)) ?? base;
 }
 
 async function getContractForInvoke() {
@@ -90,8 +175,8 @@ async function getContractForInvoke() {
       type: 'function',
       state_mutability: 'external',
       inputs: [
-        { name: 'user', type: 'ContractAddress' },
-        { name: 'amount', type: 'felt252' },
+        { name: 'user', type: 'core::starknet::contract_address::ContractAddress' },
+        { name: 'amount', type: 'core::integer::u128' },
       ],
       outputs: [],
     },
@@ -100,63 +185,61 @@ async function getContractForInvoke() {
       type: 'function',
       state_mutability: 'external',
       inputs: [
-        { name: 'user', type: 'ContractAddress' },
-        { name: 'amount', type: 'felt252' },
+        { name: 'user', type: 'core::starknet::contract_address::ContractAddress' },
+        { name: 'amount', type: 'core::integer::u128' },
       ],
       outputs: [],
     },
   ];
   const contract = new Contract(abi, CONTRACT_ADDRESS, account);
-  return contract;
+  return { contract, provider };
 }
 
 app.post('/deposit', async (req, res) => {
-  const { btcAddress, starknetAddress, amount } = req.body || {};
+  const { btcAddress, starknetAddress, amount, batch } = req.body || {};
   const amt = Number(amount);
   if (!btcAddress || !starknetAddress || !Number.isFinite(amt) || amt <= 0) {
     return res.status(400).json({ error: 'btcAddress, starknetAddress and positive amount required' });
   }
   try {
+    if (OWNER_MODE) {
+      const bridge = await Atomiq.bridgeBTC({ btcAddress, amount: amt });
+      const { contract } = await getContractForInvoke();
+      const invoke = await contract.deposit_for(starknetAddress, amt);
+      const onchainBalance = await waitForBalance({ starknetAddress, expectedDelta: amt });
+      history.push({ type: 'deposit', t: Date.now(), btcAddress, starknetAddress, amount: amt, atomiq: bridge, onchain: invoke });
+      return res.json({ bridge, onchainTx: invoke, balance: onchainBalance, mode: 'owner' });
+    }
+    // Non-custodial path: only initiate bridge; frontend must call deposit_btc
     const bridge = await Atomiq.bridgeBTC({ btcAddress, amount: amt });
-    const contract = await getContractForInvoke();
-    const invoke = await contract.deposit_for(starknetAddress, amt);
-    history.push({
-      type: 'deposit',
-      t: Date.now(),
-      btcAddress,
-      starknetAddress,
-      amount: amt,
-      atomiq: bridge,
-      onchain: invoke,
-    });
-    const onchainBalance = await readOnchainBalance(starknetAddress);
-    res.json({ bridge, onchainTx: invoke, balance: onchainBalance });
+    history.push({ type: 'deposit_intent', t: Date.now(), btcAddress, starknetAddress, amount: amt, atomiq: bridge, batch: !!batch });
+    return res.json({ bridge, instruction: 'Call deposit_btc(amount) from your Starknet wallet', mode: 'non_custodial' });
   } catch (err) {
     res.status(500).json({ error: err?.message || 'Deposit failed' });
   }
 });
 
 app.post('/withdraw', async (req, res) => {
-  const { btcAddress, starknetAddress, amount } = req.body || {};
+  const { btcAddress, starknetAddress, amount, onchainTxHash } = req.body || {};
   const amt = Number(amount);
   if (!btcAddress || !starknetAddress || !Number.isFinite(amt) || amt <= 0) {
     return res.status(400).json({ error: 'btcAddress, starknetAddress and positive amount required' });
   }
   try {
-    const contract = await getContractForInvoke();
-    const invoke = await contract.withdraw_for(starknetAddress, amt);
+    if (OWNER_MODE) {
+      const { contract } = await getContractForInvoke();
+      const invoke = await contract.withdraw_for(starknetAddress, amt);
+      const onchainBalance = await waitForBalance({ starknetAddress, expectedDelta: 0, maxMs: 120000, intervalMs: 3000 });
+      const bridge = await Atomiq.reverseBridgeBTC({ btcAddress, amount: amt });
+      history.push({ type: 'withdraw', t: Date.now(), btcAddress, starknetAddress, amount: amt, atomiq: bridge, onchain: invoke });
+      return res.json({ bridge, onchainTx: invoke, balance: onchainBalance, mode: 'owner' });
+    }
+    // Non-custodial path: require user-signed withdraw then bridge back
+    // For MVP, accept provided onchainTxHash as proof placeholder
+    if (!onchainTxHash) return res.status(400).json({ error: 'onchainTxHash required in non-custodial mode' });
     const bridge = await Atomiq.reverseBridgeBTC({ btcAddress, amount: amt });
-    history.push({
-      type: 'withdraw',
-      t: Date.now(),
-      btcAddress,
-      starknetAddress,
-      amount: amt,
-      atomiq: bridge,
-      onchain: invoke,
-    });
-    const onchainBalance = await readOnchainBalance(starknetAddress);
-    res.json({ bridge, onchainTx: invoke, balance: onchainBalance });
+    history.push({ type: 'withdraw_intent', t: Date.now(), btcAddress, starknetAddress, amount: amt, atomiq: bridge, onchainTxHash });
+    return res.json({ bridge, mode: 'non_custodial' });
   } catch (err) {
     res.status(500).json({ error: err?.message || 'Withdraw failed' });
   }

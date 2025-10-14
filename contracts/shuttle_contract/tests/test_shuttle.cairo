@@ -9,7 +9,8 @@ mod tests {
         let user = ContractAddress::from(0x123);
         set_caller_address(user);
 
-        ShuttleContract::constructor();
+        // set owner to user for this test
+        ShuttleContract::constructor(user);
 
         ShuttleContract::deposit_btc(1_u128); // 0.01 BTC in demo units
         let bal1 = ShuttleContract::get_balance(user);
@@ -24,9 +25,7 @@ mod tests {
     fn owner_deposit_for_and_withdraw_for() {
         let owner = ContractAddress::from(0x1);
         let alice = ContractAddress::from(0xA);
-        ShuttleContract::constructor();
-        // constructor sets owner = caller, so simulate that
-        set_caller_address(owner);
+        ShuttleContract::constructor(owner);
 
         ShuttleContract::deposit_for(alice, 5_u128);
         let bal = ShuttleContract::get_balance(alice);
@@ -41,8 +40,8 @@ mod tests {
     #[should_panic]
     fn non_owner_cannot_call_deposit_for() {
         let owner = ContractAddress::from(0x1);
-        ShuttleContract::constructor();
-        // constructor sets owner to current caller; now switch caller
+        ShuttleContract::constructor(owner);
+        // now switch caller
         let bob = ContractAddress::from(0xB);
         set_caller_address(bob);
         let alice = ContractAddress::from(0xA);
