@@ -169,7 +169,7 @@ Copy the printed `contract_address` into your `.env` as `CONTRACT_ADDRESS` and `
 
 ### Current testnet deployment (Sepolia)
 
-- Contract address: `0x707381bebfca862abd9c289bdc226a63658660beffdfb6a98067642e9ca7cda`
+- Contract address: `0x19519125e1f2fd7338f3681bc97fcb7bfd1f19e98d3269f99d26841d505c7de`
 - RPC: `https://starknet-sepolia.public.blastapi.io/rpc/v0_8`
 
 Notes:

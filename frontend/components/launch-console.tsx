@@ -9,7 +9,7 @@ import { useMemo, useState } from "react"
 
 export function LaunchConsole() {
   const [amount, setAmount] = useState("0.5")
-  const [token, setToken] = useState<'BTC' | 'WBTC'>('BTC')
+  const [token, setToken] = useState<'BTC' | 'WBTC' | 'USDT'>('BTC')
   const [status, setStatus] = useState<string>("")
   const estimatedAPY = 5.2
   const estimatedValue = Number.parseFloat(amount) * 42000 // Mock BTC price
@@ -45,9 +45,18 @@ export function LaunchConsole() {
       const CONTRACT_ADDRESS = process.env.NEXT_PUBLIC_CONTRACT_ADDRESS as string | undefined
       if (!CONTRACT_ADDRESS) { setStatus('Contract not configured'); return }
       const amtInt = BigInt(Math.max(1, Math.floor(Number.parseFloat(amount) || 1)))
-      const entrypoint = token === 'WBTC' ? 'deposit_wbtc' : 'deposit_btc'
-      const invoke = await account.execute({ contractAddress: CONTRACT_ADDRESS, entrypoint, calldata: [amtInt] })
-      setStatus(`On-chain sent: ${invoke?.transaction_hash || 'sent'}`)
+      if (token === 'USDT') {
+        // Approve + deposit_usdt flow
+        const USDT = '0x07011f8995a057f2c925f769c74c575b63b05a85c3b12ac2d4c749c14e053405'
+        const u256 = (n: bigint) => ({ low: n, high: 0n } as any)
+        await account.execute({ contractAddress: USDT, entrypoint: 'approve', calldata: [CONTRACT_ADDRESS, u256(amtInt)] })
+        const invoke = await account.execute({ contractAddress: CONTRACT_ADDRESS, entrypoint: 'deposit_usdt', calldata: [amtInt] })
+        setStatus(`USDT deposit sent: ${invoke?.transaction_hash || 'sent'}`)
+      } else {
+        const entrypoint = token === 'WBTC' ? 'deposit_wbtc' : 'deposit_btc'
+        const invoke = await account.execute({ contractAddress: CONTRACT_ADDRESS, entrypoint, calldata: [amtInt] })
+        setStatus(`On-chain sent: ${invoke?.transaction_hash || 'sent'}`)
+      }
     } catch (e: any) {
       setStatus(`Error: ${e?.message || 'unknown'}`)
     }
@@ -85,9 +94,10 @@ export function LaunchConsole() {
                 placeholder="0.0"
               />
               <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-2">
-                <select value={token} onChange={(e)=>setToken(e.target.value as 'BTC'|'WBTC')} className="text-sm font-medium bg-transparent">
+                <select value={token} onChange={(e)=>setToken(e.target.value as 'BTC'|'WBTC'|'USDT')} className="text-sm font-medium bg-transparent">
                   <option value="BTC">BTC</option>
                   <option value="WBTC">WBTC</option>
+                  <option value="USDT">USDT</option>
                 </select>
                 <Button size="sm" variant="ghost" className="h-8 text-xs">
                   MAX

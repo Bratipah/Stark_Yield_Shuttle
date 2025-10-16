@@ -136,12 +136,12 @@ app.post('/quote', async (req, res) => {
         if (typeof contract.estimateInvokeFee === 'function') {
           const feeRes = await contract.estimateInvokeFee('deposit_btc', [amt]);
           if (feeRes?.overall_fee) {
-            const { ethUsd, btcUsd, wbtcUsd } = await getPricesUSD();
+    const { ethUsd, btcUsd, wbtcUsd } = await getPricesUSD();
             const feeEth = Number(feeRes.overall_fee) / 1e18;
             const feeUsd = feeEth * ethUsd;
-            // For WBTC we use its USD price (tracks BTC closely)
-            const denom = token === 'WBTC' ? (wbtcUsd || btcUsd) : btcUsd;
-            starknetFee = feeUsd / denom; // convert to BTC/WBTC
+            // For WBTC we use its USD price (tracks BTC closely). For USDT, denom is 1 USD.
+            const denom = token === 'WBTC' ? (wbtcUsd || btcUsd) : token === 'USDT' ? 1 : btcUsd;
+            starknetFee = token === 'USDT' ? feeUsd : (feeUsd / denom);
           }
         }
       }
