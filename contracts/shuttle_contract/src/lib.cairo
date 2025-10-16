@@ -6,9 +6,11 @@ mod ShuttleContract {
     #[storage]
     struct Storage {
         total_btc: u128,
+        total_wbtc: u128,
         owner: ContractAddress,
         // map user -> balance
         user_balances: LegacyMap::<ContractAddress, u128>,
+        user_balances_wbtc: LegacyMap::<ContractAddress, u128>,
         // optional: yield vault address placeholder
         vault: ContractAddress,
         // protocol fee config (in basis points, 1 bps = 0.01%)
@@ -22,6 +24,7 @@ mod ShuttleContract {
     fn constructor(ref self: ContractState, owner_param: ContractAddress) {
         self.owner.write(owner_param);
         self.total_btc.write(0_u128);
+        self.total_wbtc.write(0_u128);
         // vault left unset
         // default fee: 0 bps, recipient = owner
         self.fee_bps.write(0_u16);
@@ -47,7 +50,7 @@ mod ShuttleContract {
         let prev = self.user_balances.read(user);
         self.user_balances.write(user, prev + credited);
         // TODO: Call yield protocol contract e.g. Vesu/Troves
-        self.emit(Deposited { user: user, amount: credited, fee_paid: fee });
+        self.emit(Deposited { user: user, amount: credited, fee_paid: fee, asset: 0_u8 });
     }
 
     #[external(v0)]
@@ -66,7 +69,7 @@ mod ShuttleContract {
         self.user_balances.write(user, prev - amount);
         let current_total = self.total_btc.read();
         self.total_btc.write(current_total - amount);
-        self.emit(Withdrawn { user: user, amount: amount });
+        self.emit(Withdrawn { user: user, amount: amount, asset: 0_u8 });
     }
 
     // Events
@@ -79,10 +82,10 @@ mod ShuttleContract {
     }
 
     #[derive(Drop, starknet::Event)]
-    struct Deposited { user: ContractAddress, amount: u128, fee_paid: u128 }
+    struct Deposited { user: ContractAddress, amount: u128, fee_paid: u128, asset: u8 }
 
     #[derive(Drop, starknet::Event)]
-    struct Withdrawn { user: ContractAddress, amount: u128 }
+    struct Withdrawn { user: ContractAddress, amount: u128, asset: u8 }
 
     #[derive(Drop, starknet::Event)]
     struct FeesSwept { amount: u128 }
@@ -97,7 +100,7 @@ mod ShuttleContract {
         let prev = self.user_balances.read(user);
         self.user_balances.write(user, prev + amount);
         // owner flows do not charge protocol fee
-        self.emit(Deposited { user: user, amount: amount, fee_paid: 0_u128 });
+        self.emit(Deposited { user: user, amount: amount, fee_paid: 0_u128, asset: 0_u8 });
     }
 
     #[external(v0)]
@@ -112,7 +115,7 @@ mod ShuttleContract {
         self.user_balances.write(user, prev - amount);
         let current_total = self.total_btc.read();
         self.total_btc.write(current_total - amount);
-        self.emit(Withdrawn { user: user, amount: amount });
+        self.emit(Withdrawn { user: user, amount: amount, asset: 0_u8 });
     }
 
     #[external(v0)]
@@ -152,5 +155,68 @@ mod ShuttleContract {
         }
         self.accumulated_fees.write(cur - amount);
         self.emit(FeesSwept { amount: amount });
+    }
+
+    // --- WBTC variants ---
+    #[external(v0)]
+    fn deposit_wbtc(ref self: ContractState, amount: u128) {
+        let bps: u16 = self.fee_bps.read();
+        let bps_u128: u128 = bps.into();
+        let fee: u128 = (amount * bps_u128) / 10000_u128;
+        let credited: u128 = amount - fee;
+        let cur_fees = self.accumulated_fees.read();
+        self.accumulated_fees.write(cur_fees + fee);
+
+        let current_total = self.total_wbtc.read();
+        self.total_wbtc.write(current_total + credited);
+        let user: ContractAddress = get_caller_address();
+        let prev = self.user_balances_wbtc.read(user);
+        self.user_balances_wbtc.write(user, prev + credited);
+        self.emit(Deposited { user: user, amount: credited, fee_paid: fee, asset: 1_u8 });
+    }
+
+    #[external(v0)]
+    fn withdraw_wbtc(ref self: ContractState, amount: u128) {
+        let user: ContractAddress = get_caller_address();
+        let prev = self.user_balances_wbtc.read(user);
+        if (prev < amount) {
+            panic_with_felt252('INSUFFICIENT_BAL');
+        }
+        self.user_balances_wbtc.write(user, prev - amount);
+        let current_total = self.total_wbtc.read();
+        self.total_wbtc.write(current_total - amount);
+        self.emit(Withdrawn { user: user, amount: amount, asset: 1_u8 });
+    }
+
+    #[external(v0)]
+    fn deposit_for_wbtc(ref self: ContractState, user: ContractAddress, amount: u128) {
+        let caller: ContractAddress = get_caller_address();
+        let owner_addr = self.owner.read();
+        assert(caller == owner_addr, 'ONLY_OWNER');
+        let current_total = self.total_wbtc.read();
+        self.total_wbtc.write(current_total + amount);
+        let prev = self.user_balances_wbtc.read(user);
+        self.user_balances_wbtc.write(user, prev + amount);
+        self.emit(Deposited { user: user, amount: amount, fee_paid: 0_u128, asset: 1_u8 });
+    }
+
+    #[external(v0)]
+    fn withdraw_for_wbtc(ref self: ContractState, user: ContractAddress, amount: u128) {
+        let caller: ContractAddress = get_caller_address();
+        let owner_addr = self.owner.read();
+        assert(caller == owner_addr, 'ONLY_OWNER');
+        let prev = self.user_balances_wbtc.read(user);
+        if (prev < amount) {
+            panic_with_felt252('INSUFFICIENT_BAL');
+        }
+        self.user_balances_wbtc.write(user, prev - amount);
+        let current_total = self.total_wbtc.read();
+        self.total_wbtc.write(current_total - amount);
+        self.emit(Withdrawn { user: user, amount: amount, asset: 1_u8 });
+    }
+
+    #[external(v0)]
+    fn get_balance_wbtc(self: @ContractState, user: ContractAddress) -> u128 {
+        self.user_balances_wbtc.read(user)
     }
 }

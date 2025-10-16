@@ -72,9 +72,9 @@ Create a `.env` at the repo root with:
 - Observability: `/history` endpoint exposes bridge and on-chain txs for UI
 
 - POST /preflight { tosAccepted, btcAddress, starknetAddress } → { allowed }
-- POST /quote { amount, action, batch? } → { btcL1Fee, starknetFee, marginFee, batchDiscount, totalFee, minEnforced, etaSecs, batchEligible }
-- POST /deposit { btcAddress, starknetAddress, amount, batch? } → { bridge, instruction, mode }
-- POST /withdraw { btcAddress, starknetAddress, amount, onchainTxHash? } → { bridge, mode }
+- POST /quote { amount, action, batch?, token? } → { token, btcL1Fee, starknetFee, marginFee, batchDiscount, totalFee, minEnforced, etaSecs, batchEligible }
+- POST /deposit { btcAddress, starknetAddress, amount, batch?, token? } → { bridge, instruction, mode }
+- POST /withdraw { btcAddress, starknetAddress, amount, onchainTxHash?, token? } → { bridge, mode }
 - GET /balance?btcAddress&starknetAddress
 - GET /apy
 - GET /history?btcAddress&starknetAddress
@@ -82,6 +82,7 @@ Create a `.env` at the repo root with:
 Notes:
 - In non-custodial withdraw, backend verifies a `Withdrawn` event for the tx hash before reverse bridging.
 - `/quote` converts Starknet fee from ETH→USD→BTC using CoinGecko; cached fallback is used on rate-limit or outages.
+- If `token=WBTC`, quotes denom in WBTC USD (tracks BTC closely) and backend instructs the UI to use WBTC entrypoints.
 
 ## E2E Demo Script
 
@@ -129,12 +130,21 @@ E2E demo complete ✅
 ## Contract
 - deposit_btc(amount)
 - withdraw_btc(amount)
+- deposit_wbtc(amount)
+- withdraw_wbtc(amount)
 - deposit_for(user, amount) [owner]
 - withdraw_for(user, amount) [owner]
+- deposit_for_wbtc(user, amount) [owner]
+- withdraw_for_wbtc(user, amount) [owner]
 - get_balance(address)
  - set_fee(bps, recipient) [owner]
  - get_fees() -> u128 (accounted protocol fees)
  - sweep_fees(amount) [owner] (accounting-only, emits FeesSwept)
+  - get_balance_wbtc(address)
+
+Events:
+- Deposited { user, amount, fee_paid, asset } where asset: 0=BTC, 1=WBTC
+- Withdrawn { user, amount, asset } where asset: 0=BTC, 1=WBTC
 
 Build/Test:
 ```
@@ -159,7 +169,7 @@ Copy the printed `contract_address` into your `.env` as `CONTRACT_ADDRESS` and `
 
 ### Current testnet deployment (Sepolia)
 
-- Contract address: `0x3d4a699da05dd099908006f23e696d7194da286abfa50c280ce668e017543e3`
+- Contract address: `0x707381bebfca862abd9c289bdc226a63658660beffdfb6a98067642e9ca7cda`
 - RPC: `https://starknet-sepolia.public.blastapi.io/rpc/v0_8`
 
 Notes:

@@ -72,15 +72,16 @@ async function getPricesUSD() {
   }
   try {
     const { data } = await axios.get(`${COINGECKO_API_BASE}/simple/price`, {
-      params: { ids: 'ethereum,bitcoin', vs_currencies: 'usd' },
+      params: { ids: 'ethereum,bitcoin,wrapped-bitcoin', vs_currencies: 'usd' },
       timeout: 8000,
     });
     const ethUsd = Number(data?.ethereum?.usd || 0);
     const btcUsd = Number(data?.bitcoin?.usd || 0);
+    const wbtcUsd = Number(data?.['wrapped-bitcoin']?.usd || btcUsd || 0);
     if (ethUsd > 0 && btcUsd > 0) cachedPrices = { ts: now, ethUsd, btcUsd };
-    return { ethUsd: ethUsd || cachedPrices.ethUsd || 3000, btcUsd: btcUsd || cachedPrices.btcUsd || 60000 };
+    return { ethUsd: ethUsd || cachedPrices.ethUsd || 3000, btcUsd: btcUsd || cachedPrices.btcUsd || 60000, wbtcUsd: wbtcUsd || btcUsd || 60000 };
   } catch (_e) {
-    return { ethUsd: cachedPrices.ethUsd || 3000, btcUsd: cachedPrices.btcUsd || 60000 };
+    return { ethUsd: cachedPrices.ethUsd || 3000, btcUsd: cachedPrices.btcUsd || 60000, wbtcUsd: cachedPrices.btcUsd || 60000 };
   }
 }
 
@@ -108,14 +109,14 @@ app.post('/preflight', async (req, res) => {
 
 app.post('/quote', async (req, res) => {
   try {
-    const { amount, action = 'deposit', batch = false } = req.body || {};
+    const { amount, action = 'deposit', batch = false, token = 'BTC' } = req.body || {};
     const amt = Number(amount);
     if (!Number.isFinite(amt) || amt <= 0) return res.status(400).json({ error: 'positive amount required' });
     // BTC L1 fee (stub or partner estimate)
     let btcL1Fee = 0.0001; // BTC, stub
     try {
       if (!BRIDGE_SIMULATE && ATOMIQ_BASE_URL) {
-        const { data } = await atomiqClient.get('/fee', { params: { amount: amt, action } });
+        const { data } = await atomiqClient.get('/fee', { params: { amount: amt, action, token } });
         if (data?.fee) btcL1Fee = Number(data.fee);
       }
     } catch (_e) {}
@@ -135,10 +136,12 @@ app.post('/quote', async (req, res) => {
         if (typeof contract.estimateInvokeFee === 'function') {
           const feeRes = await contract.estimateInvokeFee('deposit_btc', [amt]);
           if (feeRes?.overall_fee) {
-            const { ethUsd, btcUsd } = await getPricesUSD();
+            const { ethUsd, btcUsd, wbtcUsd } = await getPricesUSD();
             const feeEth = Number(feeRes.overall_fee) / 1e18;
             const feeUsd = feeEth * ethUsd;
-            starknetFee = feeUsd / btcUsd; // convert to BTC
+            // For WBTC we use its USD price (tracks BTC closely)
+            const denom = token === 'WBTC' ? (wbtcUsd || btcUsd) : btcUsd;
+            starknetFee = feeUsd / denom; // convert to BTC/WBTC
           }
         }
       }
@@ -149,12 +152,12 @@ app.post('/quote', async (req, res) => {
     const minEnforced = Math.max(amt, MIN_DEPOSIT);
     const totalFee = btcL1Fee + starknetFee + marginFee - batchDiscount;
     const etaSecs = batch ? 900 : 120; // batch window 15m vs 2m
-    const quote = { btcL1Fee, starknetFee, marginFee, batchDiscount, totalFee, minEnforced, etaSecs, batchEligible: true };
-    history.push({ type: 'quote', t: Date.now(), amount: amt, action, quote });
+    const quote = { token, btcL1Fee, starknetFee, marginFee, batchDiscount, totalFee, minEnforced, etaSecs, batchEligible: true };
+    history.push({ type: 'quote', t: Date.now(), amount: amt, action, token, quote });
     try {
       if (QUOTE_LOG_FILE) {
         const fs = require('fs');
-        const line = JSON.stringify({ t: Date.now(), amount: amt, action, quote }) + '\n';
+        const line = JSON.stringify({ t: Date.now(), amount: amt, action, token, quote }) + '\n';
         fs.appendFile(QUOTE_LOG_FILE, line, () => {});
       }
     } catch (_e) {}
@@ -239,7 +242,7 @@ async function getContractForInvoke() {
 }
 
 app.post('/deposit', async (req, res) => {
-  const { btcAddress, starknetAddress, amount, batch } = req.body || {};
+  const { btcAddress, starknetAddress, amount, batch, token = 'BTC' } = req.body || {};
   const amt = Number(amount);
   if (!btcAddress || !starknetAddress || !Number.isFinite(amt) || amt <= 0) {
     return res.status(400).json({ error: 'btcAddress, starknetAddress and positive amount required' });
@@ -253,17 +256,18 @@ app.post('/deposit', async (req, res) => {
       history.push({ type: 'deposit', t: Date.now(), btcAddress, starknetAddress, amount: amt, atomiq: bridge, onchain: invoke });
       return res.json({ bridge, onchainTx: invoke, balance: onchainBalance, mode: 'owner' });
     }
-    // Non-custodial path: only initiate bridge; frontend must call deposit_btc
-    const bridge = await Atomiq.bridgeBTC({ btcAddress, amount: amt });
-    history.push({ type: 'deposit_intent', t: Date.now(), btcAddress, starknetAddress, amount: amt, atomiq: bridge, batch: !!batch });
-    return res.json({ bridge, instruction: 'Call deposit_btc(amount) from your Starknet wallet', mode: 'non_custodial' });
+    // Non-custodial path: only initiate bridge; frontend must call the correct entrypoint
+    const bridge = await Atomiq.bridgeBTC({ btcAddress, amount: amt, token });
+    const instruction = token === 'WBTC' ? 'Call deposit_wbtc(amount) from your Starknet wallet' : 'Call deposit_btc(amount) from your Starknet wallet';
+    history.push({ type: 'deposit_intent', t: Date.now(), btcAddress, starknetAddress, amount: amt, token, atomiq: bridge, batch: !!batch });
+    return res.json({ bridge, instruction, mode: 'non_custodial' });
   } catch (err) {
     res.status(500).json({ error: err?.message || 'Deposit failed' });
   }
 });
 
 app.post('/withdraw', async (req, res) => {
-  const { btcAddress, starknetAddress, amount, onchainTxHash } = req.body || {};
+  const { btcAddress, starknetAddress, amount, onchainTxHash, token = 'BTC' } = req.body || {};
   const amt = Number(amount);
   if (!btcAddress || !starknetAddress || !Number.isFinite(amt) || amt <= 0) {
     return res.status(400).json({ error: 'btcAddress, starknetAddress and positive amount required' });
@@ -295,8 +299,8 @@ app.post('/withdraw', async (req, res) => {
     } catch (_e) {
       return res.status(400).json({ error: 'withdraw_verification_failed' });
     }
-    const bridge = await Atomiq.reverseBridgeBTC({ btcAddress, amount: amt });
-    history.push({ type: 'withdraw_intent', t: Date.now(), btcAddress, starknetAddress, amount: amt, atomiq: bridge, onchainTxHash });
+    const bridge = await Atomiq.reverseBridgeBTC({ btcAddress, amount: amt, token });
+    history.push({ type: 'withdraw_intent', t: Date.now(), btcAddress, starknetAddress, amount: amt, token, atomiq: bridge, onchainTxHash });
     return res.json({ bridge, mode: 'non_custodial' });
   } catch (err) {
     res.status(500).json({ error: err?.message || 'Withdraw failed' });
