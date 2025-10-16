@@ -159,7 +159,7 @@ Copy the printed `contract_address` into your `.env` as `CONTRACT_ADDRESS` and `
 
 ### Current testnet deployment (Sepolia)
 
-- Contract address: `0x25f7539cdad7a67c5dd0f6f348695bb491418126d3b00c0eaa0c5aaa2d2cb1f`
+- Contract address: `0x3d4a699da05dd099908006f23e696d7194da286abfa50c280ce668e017543e3`
 - RPC: `https://starknet-sepolia.public.blastapi.io/rpc/v0_8`
 
 Notes:
@@ -171,6 +171,33 @@ Notes:
 - Uses partner bridge APIs; wrapped BTC entails counterparty risk.
 - Quotes include estimated BTC L1 and Starknet fees plus margin; actual fees may vary.
 - Service geofences by IP header and requires ToS acceptance; partner KYC handled separately.
+
+## Rollout & Ops
+
+- Deploy (Testnet):
+```
+cd contracts/shuttle_contract && scarb build && cd ../..
+STARKNET_RPC_URL=https://starknet-sepolia.public.blastapi.io/rpc/v0_8 \
+STARKNET_ACCOUNT_ADDRESS=0xYOUR_TESTNET_ACCOUNT_ADDRESS \
+STARKNET_PRIVATE_KEY=0xYOUR_TESTNET_PRIVATE_KEY \
+node scripts/deploy-shuttle.js
+```
+- Update env (backend + frontend):
+  - `CONTRACT_ADDRESS=0xDEPLOYED`
+  - `NEXT_PUBLIC_CONTRACT_ADDRESS=0xDEPLOYED`
+  - `OWNER_MODE=false`
+  - `QUOTE_LOG_FILE=./quotes.log`
+- Start services:
+```
+node backend/server.js
+npm run dev --prefix frontend
+```
+- OWNER_MODE policy:
+  - UI demos: keep `OWNER_MODE=false` (non-custodial).
+  - Scripted E2E: set `OWNER_MODE=true`.
+- Quote metrics:
+  - Backend logs quotes to memory and appends JSON lines to `QUOTE_LOG_FILE` if set.
+  - Tail: `tail -f quotes.log`
 
 ## Pitch
 "We built the simplest way for Bitcoiners to earn DeFi yield on Starknet — one click, one button, one flow."

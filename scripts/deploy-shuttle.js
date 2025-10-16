@@ -17,11 +17,13 @@ async function main() {
   const account = new Account(provider, STARKNET_ACCOUNT_ADDRESS, STARKNET_PRIVATE_KEY);
 
   const artifactsDir = path.resolve(__dirname, '../contracts/shuttle_contract/target/dev');
-  const classJson = path.join(artifactsDir, 'shuttle_contract_ShuttleContract.compiled_contract_class.json');
-  const contractClass = json.parse(fs.readFileSync(classJson, 'utf8'));
+  const sierraPath = path.join(artifactsDir, 'shuttle_contract_ShuttleContract.contract_class.json');
+  const casmPath = path.join(artifactsDir, 'shuttle_contract_ShuttleContract.compiled_contract_class.json');
+  const sierra = json.parse(fs.readFileSync(sierraPath, 'utf8'));
+  const casm = json.parse(fs.readFileSync(casmPath, 'utf8'));
 
   console.log('Declaring class...');
-  const declare = await account.declare({ contract: contractClass });
+  const declare = await account.declare({ contract: sierra, casm });
   await provider.waitForTransaction(declare.transaction_hash);
   const classHash = declare.class_hash;
   console.log('Declared class_hash:', classHash);
