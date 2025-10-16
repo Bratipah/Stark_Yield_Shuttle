@@ -28,6 +28,9 @@ npm i --prefix backend
 # MIN_DEPOSIT=0.001
 # BATCH_DISCOUNT_BPS=10
 # ALLOWED_COUNTRIES=US,GB,DE
+# COINGECKO_API_BASE=https://api.coingecko.com/api/v3
+# KYC_ALLOWLIST=
+# KYC_DENYLIST=
 node backend/server.js
 ```
 
@@ -75,6 +78,10 @@ Create a `.env` at the repo root with:
 - GET /balance?btcAddress&starknetAddress
 - GET /apy
 - GET /history?btcAddress&starknetAddress
+
+Notes:
+- In non-custodial withdraw, backend verifies a `Withdrawn` event for the tx hash before reverse bridging.
+- `/quote` converts Starknet fee from ETH→USD→BTC using CoinGecko; cached fallback is used on rate-limit or outages.
 
 ## E2E Demo Script
 
@@ -126,6 +133,8 @@ E2E demo complete ✅
 - withdraw_for(user, amount) [owner]
 - get_balance(address)
  - set_fee(bps, recipient) [owner]
+ - get_fees() -> u128 (accounted protocol fees)
+ - sweep_fees(amount) [owner] (accounting-only, emits FeesSwept)
 
 Build/Test:
 ```

@@ -14,6 +14,8 @@ mod ShuttleContract {
         // protocol fee config (in basis points, 1 bps = 0.01%)
         fee_bps: u16,
         fee_recipient: ContractAddress,
+        // accumulated protocol fees (accounting balance)
+        accumulated_fees: u128,
     }
 
     #[constructor]
@@ -24,6 +26,7 @@ mod ShuttleContract {
         // default fee: 0 bps, recipient = owner
         self.fee_bps.write(0_u16);
         self.fee_recipient.write(owner_param);
+        self.accumulated_fees.write(0_u128);
     }
 
     #[external(v0)]
@@ -34,6 +37,9 @@ mod ShuttleContract {
         let bps_u128: u128 = bps.into();
         let fee: u128 = (amount * bps_u128) / 10000_u128;
         let credited: u128 = amount - fee;
+        // account for accrued fees
+        let cur_fees = self.accumulated_fees.read();
+        self.accumulated_fees.write(cur_fees + fee);
 
         let current_total = self.total_btc.read();
         self.total_btc.write(current_total + credited);
@@ -69,6 +75,7 @@ mod ShuttleContract {
     enum Event {
         Deposited: Deposited,
         Withdrawn: Withdrawn,
+        FeesSwept: FeesSwept,
     }
 
     #[derive(Drop, starknet::Event)]
@@ -76,6 +83,9 @@ mod ShuttleContract {
 
     #[derive(Drop, starknet::Event)]
     struct Withdrawn { user: ContractAddress, amount: u128 }
+
+    #[derive(Drop, starknet::Event)]
+    struct FeesSwept { amount: u128 }
 
     #[external(v0)]
     fn deposit_for(ref self: ContractState, user: ContractAddress, amount: u128) {
@@ -123,5 +133,24 @@ mod ShuttleContract {
         assert(caller == owner_addr, 'ONLY_OWNER');
         self.fee_bps.write(bps);
         self.fee_recipient.write(recipient);
+    }
+
+    #[external(v0)]
+    fn get_fees(self: @ContractState) -> u128 {
+        self.accumulated_fees.read()
+    }
+
+    // Owner sweep of accounted protocol fees (accounting-only event)
+    #[external(v0)]
+    fn sweep_fees(ref self: ContractState, amount: u128) {
+        let caller: ContractAddress = get_caller_address();
+        let owner_addr = self.owner.read();
+        assert(caller == owner_addr, 'ONLY_OWNER');
+        let cur = self.accumulated_fees.read();
+        if (cur < amount) {
+            panic_with_felt252('INSUFFICIENT_FEES');
+        }
+        self.accumulated_fees.write(cur - amount);
+        self.emit(FeesSwept { amount: amount });
     }
 }

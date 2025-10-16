@@ -53,11 +53,35 @@ const MARGIN_BPS = Number(process.env.MARGIN_BPS || 50); // 0.50%
 const MIN_DEPOSIT = Number(process.env.MIN_DEPOSIT || 0.001); // in BTC units for UI quoting
 const BATCH_DISCOUNT_BPS = Number(process.env.BATCH_DISCOUNT_BPS || 10); // 0.10%
 const ALLOWED_COUNTRIES = String(process.env.ALLOWED_COUNTRIES || '').split(',').map((s) => s.trim()).filter(Boolean);
+const COINGECKO_API_BASE = process.env.COINGECKO_API_BASE || 'https://api.coingecko.com/api/v3';
+const KYC_ALLOWLIST = String(process.env.KYC_ALLOWLIST || '').split(',').map((s) => s.trim()).filter(Boolean);
+const KYC_DENYLIST = String(process.env.KYC_DENYLIST || '').split(',').map((s) => s.trim()).filter(Boolean);
+const QUOTE_LOG_FILE = process.env.QUOTE_LOG_FILE || '';
 
 function countryAllowed(req) {
   const country = req.headers['x-country'] || req.headers['cf-ipcountry'] || '';
   if (ALLOWED_COUNTRIES.length === 0) return true;
   return ALLOWED_COUNTRIES.includes(String(country).toUpperCase());
+}
+
+let cachedPrices = { ts: 0, ethUsd: 0, btcUsd: 0 };
+async function getPricesUSD() {
+  const now = Date.now();
+  if (cachedPrices.ts && now - cachedPrices.ts < 30000 && cachedPrices.ethUsd && cachedPrices.btcUsd) {
+    return { ethUsd: cachedPrices.ethUsd, btcUsd: cachedPrices.btcUsd };
+  }
+  try {
+    const { data } = await axios.get(`${COINGECKO_API_BASE}/simple/price`, {
+      params: { ids: 'ethereum,bitcoin', vs_currencies: 'usd' },
+      timeout: 8000,
+    });
+    const ethUsd = Number(data?.ethereum?.usd || 0);
+    const btcUsd = Number(data?.bitcoin?.usd || 0);
+    if (ethUsd > 0 && btcUsd > 0) cachedPrices = { ts: now, ethUsd, btcUsd };
+    return { ethUsd: ethUsd || cachedPrices.ethUsd || 3000, btcUsd: btcUsd || cachedPrices.btcUsd || 60000 };
+  } catch (_e) {
+    return { ethUsd: cachedPrices.ethUsd || 3000, btcUsd: cachedPrices.btcUsd || 60000 };
+  }
 }
 
 app.post('/preflight', async (req, res) => {
@@ -66,7 +90,16 @@ app.post('/preflight', async (req, res) => {
     if (!tosAccepted) return res.status(400).json({ allowed: false, reason: 'TOS_NOT_ACCEPTED' });
     if (!countryAllowed(req)) return res.status(403).json({ allowed: false, reason: 'GEOFENCE' });
     if (!btcAddress || !starknetAddress) return res.status(400).json({ allowed: false, reason: 'MISSING_ADDRESSES' });
-    // Partner KYC stub: assume allowed in MVP
+    // Mock KYC: explicit denylist first, then allowlist if set
+    if (KYC_DENYLIST.includes(String(btcAddress)) || KYC_DENYLIST.includes(String(starknetAddress))) {
+      return res.status(403).json({ allowed: false, reason: 'KYC_DENYLIST' });
+    }
+    if (KYC_ALLOWLIST.length > 0) {
+      if (!(KYC_ALLOWLIST.includes(String(btcAddress)) || KYC_ALLOWLIST.includes(String(starknetAddress)))) {
+        return res.status(403).json({ allowed: false, reason: 'KYC_NOT_ALLOWLISTED' });
+      }
+    }
+    // Partner KYC stub: assume allowed beyond allow/deny logic
     return res.json({ allowed: true });
   } catch (e) {
     return res.status(500).json({ allowed: false, reason: 'SERVER_ERROR' });
@@ -101,9 +134,11 @@ app.post('/quote', async (req, res) => {
         const contract = new Contract(abi, CONTRACT_ADDRESS, provider);
         if (typeof contract.estimateInvokeFee === 'function') {
           const feeRes = await contract.estimateInvokeFee('deposit_btc', [amt]);
-          // Convert gwei-like units to BTC stub: keep placeholder
           if (feeRes?.overall_fee) {
-            starknetFee = Number(feeRes.overall_fee) / 1e18 / 20000; // naive: ETH -> USD -> BTC
+            const { ethUsd, btcUsd } = await getPricesUSD();
+            const feeEth = Number(feeRes.overall_fee) / 1e18;
+            const feeUsd = feeEth * ethUsd;
+            starknetFee = feeUsd / btcUsd; // convert to BTC
           }
         }
       }
@@ -114,8 +149,16 @@ app.post('/quote', async (req, res) => {
     const minEnforced = Math.max(amt, MIN_DEPOSIT);
     const totalFee = btcL1Fee + starknetFee + marginFee - batchDiscount;
     const etaSecs = batch ? 900 : 120; // batch window 15m vs 2m
-
-    return res.json({ btcL1Fee, starknetFee, marginFee, batchDiscount, totalFee, minEnforced, etaSecs, batchEligible: true });
+    const quote = { btcL1Fee, starknetFee, marginFee, batchDiscount, totalFee, minEnforced, etaSecs, batchEligible: true };
+    history.push({ type: 'quote', t: Date.now(), amount: amt, action, quote });
+    try {
+      if (QUOTE_LOG_FILE) {
+        const fs = require('fs');
+        const line = JSON.stringify({ t: Date.now(), amount: amt, action, quote }) + '\n';
+        fs.appendFile(QUOTE_LOG_FILE, line, () => {});
+      }
+    } catch (_e) {}
+    return res.json(quote);
   } catch (e) {
     return res.status(500).json({ error: 'quote_failed' });
   }
@@ -237,6 +280,21 @@ app.post('/withdraw', async (req, res) => {
     // Non-custodial path: require user-signed withdraw then bridge back
     // For MVP, accept provided onchainTxHash as proof placeholder
     if (!onchainTxHash) return res.status(400).json({ error: 'onchainTxHash required in non-custodial mode' });
+    // Verify withdraw event from our contract address (basic check)
+    try {
+      const CONTRACT_ADDRESS = process.env.CONTRACT_ADDRESS;
+      const STARKNET_RPC_URL = process.env.STARKNET_RPC_URL;
+      const { RpcProvider } = await import('starknet');
+      const provider = new RpcProvider({ nodeUrl: STARKNET_RPC_URL });
+      const receipt = await provider.getTransactionReceipt(onchainTxHash);
+      const ok = Array.isArray(receipt?.events) && receipt.events.some((ev) => {
+        const from = (ev.from_address || ev.fromAddress || '').toLowerCase();
+        return CONTRACT_ADDRESS && from === CONTRACT_ADDRESS.toLowerCase();
+      });
+      if (!ok) return res.status(400).json({ error: 'withdraw_event_not_found' });
+    } catch (_e) {
+      return res.status(400).json({ error: 'withdraw_verification_failed' });
+    }
     const bridge = await Atomiq.reverseBridgeBTC({ btcAddress, amount: amt });
     history.push({ type: 'withdraw_intent', t: Date.now(), btcAddress, starknetAddress, amount: amt, atomiq: bridge, onchainTxHash });
     return res.json({ bridge, mode: 'non_custodial' });
